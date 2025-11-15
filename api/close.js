@@ -1,7 +1,7 @@
-const { ExchangeClient, HttpTransport } = require('@nktkas/hyperliquid');
-const { Wallet } = require('ethers');
+import { ExchangeClient, HttpTransport } from '@nktkas/hyperliquid';
+import { Wallet } from 'ethers';
 
-module.exports = async (req, res) => {
+export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -44,7 +44,7 @@ module.exports = async (req, res) => {
     
     const result = await client.placeOrder(order);
     
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       response: result,
       exit_price: result?.data?.statuses?.[0]?.filled?.avgPx || null,
@@ -52,7 +52,7 @@ module.exports = async (req, res) => {
     });
     
   } catch (error) {
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       error: {
         message: error.message,
@@ -60,4 +60,4 @@ module.exports = async (req, res) => {
       }
     });
   }
-};
+}
