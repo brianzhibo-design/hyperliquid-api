@@ -19,6 +19,7 @@ export default async function handler(req, res) {
 
     const wallet = new Wallet(privateKey);
     
+    // 步骤 1: 获取资产索引
     const metaResponse = await fetch('https://api.hyperliquid.xyz/info', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -39,20 +40,39 @@ export default async function handler(req, res) {
       throw new Error(`Asset ${market} not found`);
     }
 
+    // 步骤 2: 获取当前市场价格
+    const midsResponse = await fetch('https://api.hyperliquid.xyz/info', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'allMids' })
+    });
+    
+    const mids = await midsResponse.json();
+    const currentPrice = parseFloat(mids[market]);
+    
+    if (!currentPrice) {
+      throw new Error(`Cannot get current price for ${market}`);
+    }
+    
+    // 平仓卖单：使用低于市价的价格确保成交
+    const limitPrice = (currentPrice * 0.95).toString();
+
+    // 步骤 3: 构建平仓 action
     const timestamp = Date.now();
     const action = {
       type: 'order',
       orders: [{
         a: assetIndex,
-        b: false,
-        p: '0',
+        b: false,  // 卖出
+        p: limitPrice,
         s: size.toString(),
-        r: true,
+        r: true,   // reduce_only = true
         t: { limit: { tif: 'Ioc' } }
       }],
       grouping: 'na'
     };
 
+    // 步骤 4: 计算 action hash
     let data = Buffer.from(encode(action));
     
     const nonceBuffer = Buffer.alloc(8);
@@ -68,11 +88,13 @@ export default async function handler(req, res) {
     
     const actionHashHex = keccak256(data);
 
+    // 步骤 5: 构建 Phantom Agent
     const phantomAgent = {
       source: 'a',
       connectionId: actionHashHex
     };
 
+    // 步骤 6: EIP-712 签名
     const domain = {
       name: 'Exchange',
       version: '1',
@@ -89,6 +111,7 @@ export default async function handler(req, res) {
 
     const signature = await wallet.signTypedData(domain, types, phantomAgent);
 
+    // 步骤 7: 发送平仓订单
     const orderRequest = {
       action: action,
       nonce: timestamp,
@@ -112,6 +135,8 @@ export default async function handler(req, res) {
       success: result.status === 'ok',
       response: result,
       exit_price: result.response?.data?.statuses?.[0]?.filled?.avgPx || null,
+      current_price: currentPrice,
+      limit_price: limitPrice,
       timestamp: timestamp
     });
 
