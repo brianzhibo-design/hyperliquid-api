@@ -10,31 +10,59 @@ export default async function handler(req, res) {
     return res.status(200).end();
   }
 
+  if (req.method !== 'POST') {
+    return res.status(405).json({
+      success: false,
+      error: { message: 'Method not allowed. Use POST.' }
+    });
+  }
+
   try {
-    const config = req.body;
-    const { market, size, agent_key, tp, sl, timeout } = config;
+    // 添加调试信息
+    if (!req.body) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'Request body is missing' }
+      });
+    }
+
+    const { market, size, agent_key, tp, sl, timeout } = req.body;
     
     if (!agent_key || !market || !size) {
-      throw new Error('Missing required parameters');
+      return res.status(400).json({
+        success: false,
+        error: { 
+          message: 'Missing required parameters',
+          received: { market, size, agent_key: agent_key ? 'present' : 'missing' }
+        }
+      });
     }
 
     const wallet = new Wallet(agent_key);
     
     // 1. 获取资产索引和当前价格
-    const [metaResponse, midsResponse] = await Promise.all([
-      fetch('https://api.hyperliquid.xyz/info', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'meta' })
-      }),
-      fetch('https://api.hyperliquid.xyz/info', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'allMids' })
-      })
-    ]);
+    const metaResponse = await fetch('https://api.hyperliquid.xyz/info', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'meta' })
+    });
+    
+    if (!metaResponse.ok) {
+      throw new Error('Failed to fetch meta data');
+    }
     
     const meta = await metaResponse.json();
+    
+    const midsResponse = await fetch('https://api.hyperliquid.xyz/info', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'allMids' })
+    });
+    
+    if (!midsResponse.ok) {
+      throw new Error('Failed to fetch price data');
+    }
+    
     const mids = await midsResponse.json();
     
     let assetIndex = -1;
@@ -60,15 +88,15 @@ export default async function handler(req, res) {
       type: 'order',
       orders: [{
         a: assetIndex,
-        b: true,  // 买入
-        p: "0",   // Trigger market 价格设为 0
+        b: true,
+        p: "0",
         s: parseFloat(size).toString(),
         r: false,
         t: {
           trigger: {
             isMarket: true,
             triggerPx: currentPrice.toString(),
-            tpsl: ""  // 空字符串表示普通市价单
+            tpsl: ""
           }
         }
       }],
@@ -134,7 +162,10 @@ export default async function handler(req, res) {
   } catch (error) {
     return res.status(500).json({
       success: false,
-      error: { message: error.message }
+      error: { 
+        message: error.message,
+        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      }
     });
   }
 }
