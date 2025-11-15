@@ -206,7 +206,7 @@ export default async function handler(req, res) {
         b: false,        // 卖出
         p: slippagePrice,
         s: orderSize,
-        r: true,         // reduce only (只减仓)
+        r: false,        // 现货交易不支持 reduce-only，必须是 false
         t: { limit: { tif: 'Ioc' } }
       }],
       grouping: 'na'
