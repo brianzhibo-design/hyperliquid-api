@@ -25,7 +25,7 @@ export default async function handler(req, res) {
     console.log('=== Close Request Started ===');
     console.log('Body:', JSON.stringify(req.body));
     
-    const { market, size, agent_key } = req.body;
+    const { market, size, agent_key, main_wallet } = req.body;
     
     if (!agent_key || !market) {
       return res.status(400).json({
@@ -35,7 +35,11 @@ export default async function handler(req, res) {
     }
 
     const wallet = new Wallet(agent_key);
-    console.log('Wallet address:', wallet.address);
+    console.log('API Wallet address:', wallet.address);
+    
+    // 使用主钱包地址查询余额（如果提供），否则使用 API 钱包地址
+    const queryAddress = main_wallet || wallet.address;
+    console.log('Query address for balance:', queryAddress);
     
     // 代币名称映射
     const tokenMap = {
@@ -95,14 +99,14 @@ export default async function handler(req, res) {
     const assetIndex = 10000 + spotIndex;
     console.log('Asset index:', assetIndex);
     
-    // 查询当前持仓
+    // 查询当前持仓（使用主钱包地址或 API 钱包地址）
     console.log('=== Checking current position ===');
     const balanceResponse = await fetch('https://api.hyperliquid.xyz/info', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         type: 'spotClearinghouseState',
-        user: wallet.address
+        user: queryAddress
       })
     });
     
@@ -119,6 +123,12 @@ export default async function handler(req, res) {
       for (const balance of balanceData.balances) {
         if (balance.token === targetToken.index) {
           currentBalance = parseFloat(balance.total) - parseFloat(balance.hold);
+          console.log('Found balance:', {
+            coin: balance.coin,
+            total: balance.total,
+            hold: balance.hold,
+            available: currentBalance
+          });
           break;
         }
       }
@@ -129,7 +139,14 @@ export default async function handler(req, res) {
     if (currentBalance <= 0) {
       return res.status(400).json({
         success: false,
-        error: { message: `No ${spotToken} balance to close. Current: ${currentBalance}` }
+        error: { 
+          message: `No ${spotToken} balance to close. Current: ${currentBalance}`,
+          details: {
+            query_address: queryAddress,
+            token: spotToken,
+            balance: currentBalance
+          }
+        }
       });
     }
     
@@ -255,7 +272,8 @@ export default async function handler(req, res) {
         spot_pair: spotPair.name,
         closed_size: orderSize,
         price: slippagePrice,
-        asset_index: assetIndex
+        asset_index: assetIndex,
+        query_address: queryAddress
       },
       timestamp
     });
