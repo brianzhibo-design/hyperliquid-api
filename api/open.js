@@ -56,7 +56,7 @@ export default async function handler(req, res) {
     const metaResponse = await fetch('https://api.hyperliquid.xyz/info', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: 'spotMeta' })  // ✅ 现货元数据
+      body: JSON.stringify({ type: 'spotMeta' })
     });
     
     if (!metaResponse.ok) {
@@ -64,8 +64,51 @@ export default async function handler(req, res) {
     }
     
     const spotMeta = await metaResponse.json();
-    console.log('Spot meta received, assets count:', spotMeta.universe.length);
+    console.log('Spot meta received');
+    console.log('Tokens:', spotMeta.tokens.map(t => t.name).slice(0, 10));
+    console.log('Universe sample:', spotMeta.universe.slice(0, 5).map(u => ({ name: u.name, index: u.index })));
     
+    // 找到目标代币的 token index
+    let targetToken = null;
+    for (const token of spotMeta.tokens) {
+      if (token.name === market) {
+        targetToken = token;
+        break;
+      }
+    }
+    
+    if (!targetToken) {
+      throw new Error(`Token ${market} not found in spot tokens`);
+    }
+    console.log('Found token:', targetToken.name, 'with index:', targetToken.index);
+    
+    // 找到交易对 (token vs USDC)
+    // USDC 的 token index 是 0
+    let spotPair = null;
+    let spotIndex = -1;
+    
+    for (const pair of spotMeta.universe) {
+      // pair.tokens 是 [token1_index, token2_index]
+      // 我们要找 [targetToken.index, 0] 或 [0, targetToken.index]
+      if ((pair.tokens[0] === targetToken.index && pair.tokens[1] === 0) ||
+          (pair.tokens[0] === 0 && pair.tokens[1] === targetToken.index)) {
+        spotPair = pair;
+        spotIndex = pair.index;
+        break;
+      }
+    }
+    
+    if (!spotPair) {
+      throw new Error(`Spot pair for ${market}/USDC not found`);
+    }
+    
+    console.log('Found spot pair:', spotPair.name, 'at index:', spotIndex);
+    
+    // 现货资产索引 = 10000 + spotMeta.universe 索引
+    const assetIndex = 10000 + spotIndex;
+    console.log('Asset index for order:', assetIndex);
+    
+    // 获取价格 - 使用 spotPair.name (可能是 "ETH/USDC" 或 "@123")
     console.log('=== Fetching price ===');
     const midsResponse = await fetch('https://api.hyperliquid.xyz/info', {
       method: 'POST',
@@ -78,48 +121,29 @@ export default async function handler(req, res) {
     }
     
     const mids = await midsResponse.json();
+    console.log('Sample mids keys:', Object.keys(mids).slice(0, 20));
     
-    // 现货交易对格式：ETH/USDC
-    const spotPair = `${market}/USDC`;
-    console.log('Looking for spot pair:', spotPair);
-    console.log('Price received for', spotPair, ':', mids[spotPair]);
-    
-    let spotIndex = -1;
-    for (let i = 0; i < spotMeta.universe.length; i++) {
-      if (spotMeta.universe[i].name === spotPair) {
-        spotIndex = i;
-        break;
-      }
-    }
-    
-    if (spotIndex === -1) {
-      throw new Error(`Spot asset ${spotPair} not found`);
-    }
-    
-    // 现货资产索引 = 10000 + spotMeta 索引
-    const assetIndex = 10000 + spotIndex;
-    console.log('Spot index:', spotIndex, '→ Asset index:', assetIndex);
-
-    const currentPrice = parseFloat(mids[spotPair]);
+    const currentPrice = parseFloat(mids[spotPair.name]);
     if (!currentPrice) {
-      throw new Error(`Cannot get price for ${spotPair}`);
+      throw new Error(`Cannot get price for ${spotPair.name}`);
     }
+    console.log('Current price for', spotPair.name, ':', currentPrice);
 
     console.log('=== Building SPOT order ===');
     const timestamp = Date.now();
     
-    // 计算订单数量：USD 金额 / 当前价格
+    // 计算订单数量
     const usdAmount = parseFloat(size);
     const orderSize = removeTrailingZeros((usdAmount / currentPrice).toFixed(4));
     console.log(`Order calculation: $${usdAmount} USDC / $${currentPrice} = ${orderSize} ${market}`);
     
-    // 现货市价买单：使用略高于市价的限价 + Ioc
+    // 市价买单
     const slippagePrice = removeTrailingZeros((currentPrice * 1.01).toFixed(1));
 
     const action = {
       type: 'order',
       orders: [{
-        a: assetIndex,  // 10000 + spotIndex
+        a: assetIndex,
         b: true,
         p: slippagePrice,
         s: orderSize,
@@ -130,14 +154,6 @@ export default async function handler(req, res) {
     };
     
     console.log('Action:', JSON.stringify(action));
-    console.log('Order details:', {
-      spot_pair: spotPair,
-      usd_amount: usdAmount,
-      size: orderSize,
-      price: slippagePrice,
-      current_price: currentPrice,
-      asset_index: assetIndex
-    });
 
     console.log('=== Encoding with msgpack ===');
     let data = Buffer.from(encode(action));
@@ -192,7 +208,7 @@ export default async function handler(req, res) {
       success: result.status === 'ok',
       response: result,
       payload: {
-        market: spotPair,
+        spot_pair: spotPair.name,
         usd_amount: usdAmount,
         size: orderSize,
         is_buy: true,
