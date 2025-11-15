@@ -2,9 +2,6 @@ import { Wallet, keccak256 } from 'ethers';
 import { encode } from '@msgpack/msgpack';
 
 export default async function handler(req, res) {
-  console.log('=== Request started ===');
-  console.log('Body:', JSON.stringify(req.body));
-  
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -21,7 +18,8 @@ export default async function handler(req, res) {
   }
 
   try {
-    console.log('=== Parsing body ===');
+    console.log('=== Request started ===');
+    console.log('Body:', JSON.stringify(req.body));
     
     if (!req.body) {
       return res.status(400).json({
@@ -31,6 +29,8 @@ export default async function handler(req, res) {
     }
 
     const { market, size, agent_key, tp, sl, timeout } = req.body;
+    
+    console.log('=== Parsing body ===');
     console.log('Params:', { market, size, has_key: !!agent_key });
     
     if (!agent_key || !market || !size) {
@@ -95,25 +95,36 @@ export default async function handler(req, res) {
 
     console.log('=== Building order ===');
     const timestamp = Date.now();
+    
+    // 计算订单数量：USD 金额 / 当前价格
+    const usdAmount = parseFloat(size);
+    const orderSize = (usdAmount / currentPrice).toFixed(4);
+    console.log(`Order calculation: $${usdAmount} USDC / $${currentPrice} = ${orderSize} ${market}`);
+    
+    // 市价买单：使用略高于市价的限价 + Ioc
+    const slippagePrice = (currentPrice * 1.01).toFixed(1);
+
     const action = {
       type: 'order',
       orders: [{
         a: assetIndex,
         b: true,
-        p: "0",
-        s: parseFloat(size).toString(),
+        p: slippagePrice,
+        s: orderSize,
         r: false,
-        t: {
-          trigger: {
-            isMarket: true,
-            triggerPx: currentPrice.toString(),
-            tpsl: ""
-          }
-        }
+        t: { limit: { tif: 'Ioc' } }
       }],
       grouping: 'na'
     };
+    
     console.log('Action:', JSON.stringify(action));
+    console.log('Order details:', {
+      market,
+      usd_amount: usdAmount,
+      size: orderSize,
+      price: slippagePrice,
+      current_price: currentPrice
+    });
 
     console.log('=== Encoding with msgpack ===');
     let data = Buffer.from(encode(action));
@@ -169,8 +180,10 @@ export default async function handler(req, res) {
       response: result,
       payload: {
         market: market,
-        size: parseFloat(size),
-        is_buy: true
+        usd_amount: usdAmount,
+        size: orderSize,
+        is_buy: true,
+        price: slippagePrice
       },
       tp: tp,
       sl: sl,
