@@ -1,6 +1,11 @@
 import { Wallet, keccak256 } from 'ethers';
 import { encode } from '@msgpack/msgpack';
 
+// 移除尾随零的函数（Hyperliquid 要求）
+function removeTrailingZeros(numStr) {
+  return parseFloat(numStr).toString();
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -98,11 +103,11 @@ export default async function handler(req, res) {
     
     // 计算订单数量：USD 金额 / 当前价格
     const usdAmount = parseFloat(size);
-    const orderSize = (usdAmount / currentPrice).toFixed(4);
+    const orderSize = removeTrailingZeros((usdAmount / currentPrice).toFixed(4));
     console.log(`Order calculation: $${usdAmount} USDC / $${currentPrice} = ${orderSize} ${market}`);
     
     // 市价买单：使用略高于市价的限价 + Ioc
-    const slippagePrice = (currentPrice * 1.01).toFixed(1);
+    const slippagePrice = removeTrailingZeros((currentPrice * 1.01).toFixed(1));
 
     const action = {
       type: 'order',
