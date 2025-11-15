@@ -1,7 +1,6 @@
 import { Wallet, keccak256 } from 'ethers';
 import { encode } from '@msgpack/msgpack';
 
-// 移除尾随零的函数
 function removeTrailingZeros(numStr) {
   return parseFloat(numStr).toString();
 }
@@ -26,32 +25,29 @@ export default async function handler(req, res) {
     console.log('=== Request started ===');
     console.log('Body:', JSON.stringify(req.body));
     
-    if (!req.body) {
-      return res.status(400).json({
-        success: false,
-        error: { message: 'Request body is missing' }
-      });
-    }
-
     const { market, size, agent_key, tp, sl, timeout } = req.body;
-    
-    console.log('=== Parsing body ===');
-    console.log('Params:', { market, size, has_key: !!agent_key });
     
     if (!agent_key || !market || !size) {
       return res.status(400).json({
         success: false,
-        error: { 
-          message: 'Missing required parameters',
-          received: { market, size, agent_key: agent_key ? 'present' : 'missing' }
-        }
+        error: { message: 'Missing required parameters' }
       });
     }
 
-    console.log('=== Creating wallet ===');
     const wallet = new Wallet(agent_key);
     console.log('Wallet address:', wallet.address);
     
+    // 代币名称映射（永续 -> 现货）
+    const tokenMap = {
+      'ETH': 'UETH',   // ETH 现货叫 UETH
+      'BTC': 'UBTC',   // BTC 现货叫 UBTC  
+      // 其他代币保持原名
+    };
+    
+    const spotToken = tokenMap[market] || market;
+    console.log('Market:', market, '→ Spot token:', spotToken);
+    
+    // 获取现货元数据
     console.log('=== Fetching SPOT meta ===');
     const metaResponse = await fetch('https://api.hyperliquid.xyz/info', {
       method: 'POST',
@@ -60,36 +56,33 @@ export default async function handler(req, res) {
     });
     
     if (!metaResponse.ok) {
-      throw new Error('Failed to fetch spot meta data');
+      throw new Error('Failed to fetch spot meta');
     }
     
     const spotMeta = await metaResponse.json();
-    console.log('Spot meta received');
-    console.log('Tokens:', spotMeta.tokens.map(t => t.name).slice(0, 10));
-    console.log('Universe sample:', spotMeta.universe.slice(0, 5).map(u => ({ name: u.name, index: u.index })));
+    console.log('Spot tokens count:', spotMeta.tokens.length);
+    console.log('Spot pairs count:', spotMeta.universe.length);
     
-    // 找到目标代币的 token index
+    // 找到代币
     let targetToken = null;
     for (const token of spotMeta.tokens) {
-      if (token.name === market) {
+      if (token.name === spotToken) {
         targetToken = token;
         break;
       }
     }
     
     if (!targetToken) {
-      throw new Error(`Token ${market} not found in spot tokens`);
+      throw new Error(`Spot token ${spotToken} not found. Available tokens: ${spotMeta.tokens.slice(0, 10).map(t => t.name).join(', ')}...`);
     }
-    console.log('Found token:', targetToken.name, 'with index:', targetToken.index);
+    console.log('Found token:', targetToken.name, 'index:', targetToken.index);
     
     // 找到交易对 (token vs USDC)
-    // USDC 的 token index 是 0
+    // USDC 的 token index = 0
     let spotPair = null;
     let spotIndex = -1;
     
     for (const pair of spotMeta.universe) {
-      // pair.tokens 是 [token1_index, token2_index]
-      // 我们要找 [targetToken.index, 0] 或 [0, targetToken.index]
       if ((pair.tokens[0] === targetToken.index && pair.tokens[1] === 0) ||
           (pair.tokens[0] === 0 && pair.tokens[1] === targetToken.index)) {
         spotPair = pair;
@@ -99,16 +92,16 @@ export default async function handler(req, res) {
     }
     
     if (!spotPair) {
-      throw new Error(`Spot pair for ${market}/USDC not found`);
+      throw new Error(`Spot pair ${spotToken}/USDC not found`);
     }
     
-    console.log('Found spot pair:', spotPair.name, 'at index:', spotIndex);
+    console.log('Found spot pair:', spotPair.name, 'at universe index:', spotIndex);
     
-    // 现货资产索引 = 10000 + spotMeta.universe 索引
+    // 现货资产索引 = 10000 + universe index
     const assetIndex = 10000 + spotIndex;
     console.log('Asset index for order:', assetIndex);
     
-    // 获取价格 - 使用 spotPair.name (可能是 "ETH/USDC" 或 "@123")
+    // 获取价格
     console.log('=== Fetching price ===');
     const midsResponse = await fetch('https://api.hyperliquid.xyz/info', {
       method: 'POST',
@@ -117,28 +110,35 @@ export default async function handler(req, res) {
     });
     
     if (!midsResponse.ok) {
-      throw new Error('Failed to fetch price data');
+      throw new Error('Failed to fetch prices');
     }
     
     const mids = await midsResponse.json();
-    console.log('Sample mids keys:', Object.keys(mids).slice(0, 20));
+    console.log('Looking for price with key:', spotPair.name);
     
     const currentPrice = parseFloat(mids[spotPair.name]);
     if (!currentPrice) {
-      throw new Error(`Cannot get price for ${spotPair.name}`);
+      // 尝试其他格式
+      const altKey = `@${spotIndex}`;
+      const altPrice = parseFloat(mids[altKey]);
+      if (altPrice) {
+        console.log('Price found with alternate key:', altKey);
+        currentPrice = altPrice;
+      } else {
+        throw new Error(`Cannot get price for ${spotPair.name} or ${altKey}. Available keys: ${Object.keys(mids).slice(0, 20).join(', ')}`);
+      }
     }
-    console.log('Current price for', spotPair.name, ':', currentPrice);
+    console.log('Current price:', currentPrice);
 
+    // 构建订单
     console.log('=== Building SPOT order ===');
     const timestamp = Date.now();
     
-    // 计算订单数量
     const usdAmount = parseFloat(size);
     const orderSize = removeTrailingZeros((usdAmount / currentPrice).toFixed(4));
-    console.log(`Order calculation: $${usdAmount} USDC / $${currentPrice} = ${orderSize} ${market}`);
-    
-    // 市价买单
     const slippagePrice = removeTrailingZeros((currentPrice * 1.01).toFixed(1));
+    
+    console.log(`Order: $${usdAmount} USDC / $${currentPrice} = ${orderSize} ${spotToken} @ $${slippagePrice}`);
 
     const action = {
       type: 'order',
@@ -155,7 +155,8 @@ export default async function handler(req, res) {
     
     console.log('Action:', JSON.stringify(action));
 
-    console.log('=== Encoding with msgpack ===');
+    // 签名
+    console.log('=== Encoding & Signing ===');
     let data = Buffer.from(encode(action));
     console.log('Encoded length:', data.length);
     
@@ -163,11 +164,9 @@ export default async function handler(req, res) {
     nonceBuffer.writeBigUInt64BE(BigInt(timestamp));
     data = Buffer.concat([data, nonceBuffer, Buffer.from([0x00])]);
     
-    console.log('=== Hashing ===');
     const actionHashHex = keccak256(data);
     console.log('Hash:', actionHashHex);
     
-    console.log('=== Signing ===');
     const signature = await wallet.signTypedData(
       {
         name: 'Exchange',
@@ -185,6 +184,7 @@ export default async function handler(req, res) {
     );
     console.log('Signature:', signature.slice(0, 20) + '...');
 
+    // 发送订单
     console.log('=== Sending SPOT order ===');
     const tradeResponse = await fetch('https://api.hyperliquid.xyz/exchange', {
       method: 'POST',
@@ -208,17 +208,16 @@ export default async function handler(req, res) {
       success: result.status === 'ok',
       response: result,
       payload: {
+        market: market,
+        spot_token: spotToken,
         spot_pair: spotPair.name,
         usd_amount: usdAmount,
         size: orderSize,
-        is_buy: true,
         price: slippagePrice,
         asset_index: assetIndex
       },
-      tp: tp,
-      sl: sl,
-      timeout: timeout,
-      timestamp: timestamp
+      tp, sl, timeout,
+      timestamp
     });
 
   } catch (error) {
