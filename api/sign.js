@@ -40,14 +40,33 @@ export default async function handler(req, res) {
       throw new Error(`Asset ${market} not found`);
     }
 
-    // 步骤 2: 构建 action
+    // 步骤 2: 获取当前市场价格
+    const midsResponse = await fetch('https://api.hyperliquid.xyz/info', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'allMids' })
+    });
+    
+    const mids = await midsResponse.json();
+    const currentPrice = parseFloat(mids[market]);
+    
+    if (!currentPrice) {
+      throw new Error(`Cannot get current price for ${market}`);
+    }
+    
+    // 市价单：买入用高价，卖出用低价
+    const limitPrice = isBuy ? 
+      (currentPrice * 1.05).toString() :  // 买入：高出市价 5%
+      (currentPrice * 0.95).toString();   // 卖出：低于市价 5%
+
+    // 步骤 3: 构建 action
     const timestamp = Date.now();
     const action = {
       type: 'order',
       orders: [{
         a: assetIndex,
         b: isBuy,
-        p: '0',
+        p: limitPrice,
         s: size.toString(),
         r: false,
         t: { limit: { tif: 'Ioc' } }
@@ -55,7 +74,7 @@ export default async function handler(req, res) {
       grouping: 'na'
     };
 
-    // 步骤 3: 计算 action hash
+    // 步骤 4: 计算 action hash
     let data = Buffer.from(encode(action));
     
     // 添加 nonce (8 bytes, big-endian)
@@ -63,7 +82,7 @@ export default async function handler(req, res) {
     nonceBuffer.writeBigUInt64BE(BigInt(timestamp));
     data = Buffer.concat([data, nonceBuffer]);
     
-    // 添加 vault address (如果是 null 就加 0x00)
+    // 添加 vault address
     if (vaultAddress) {
       const vaultAddressBytes = Buffer.from(vaultAddress.slice(2).toLowerCase(), 'hex');
       data = Buffer.concat([data, Buffer.from([0x01]), vaultAddressBytes]);
@@ -73,13 +92,13 @@ export default async function handler(req, res) {
     
     const actionHashHex = keccak256(data);
 
-    // 步骤 4: 构建 Phantom Agent
+    // 步骤 5: 构建 Phantom Agent
     const phantomAgent = {
       source: 'a',
       connectionId: actionHashHex
     };
 
-    // 步骤 5: EIP-712 签名
+    // 步骤 6: EIP-712 签名
     const domain = {
       name: 'Exchange',
       version: '1',
@@ -96,7 +115,7 @@ export default async function handler(req, res) {
 
     const signature = await wallet.signTypedData(domain, types, phantomAgent);
 
-    // 步骤 6: 发送订单
+    // 步骤 7: 发送订单
     const orderRequest = {
       action: action,
       nonce: timestamp,
@@ -123,7 +142,9 @@ export default async function handler(req, res) {
         market: market,
         size: parseFloat(size),
         is_buy: isBuy,
-        asset_index: assetIndex
+        asset_index: assetIndex,
+        limit_price: limitPrice,
+        current_price: currentPrice
       },
       timestamp: timestamp
     });
