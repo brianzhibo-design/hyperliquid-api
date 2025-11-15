@@ -1,4 +1,4 @@
-import { Wallet, keccak256, concat, toUtf8Bytes } from 'ethers';
+import { Wallet, keccak256, toUtf8Bytes, concat, zeroPadValue } from 'ethers';
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -39,73 +39,55 @@ export default async function handler(req, res) {
     }
 
     const timestamp = Date.now();
-    const orderWire = {
+    const order = {
       a: assetIndex,
-      b: false,
+      b: false,  // 卖出
       p: '0',
       s: size.toString(),
-      r: true,
+      r: true,   // reduce_only
       t: { limit: { tif: 'Ioc' } }
     };
 
-    const connectionId = keccak256(concat([
-      toUtf8Bytes('hyperliquid'),
-      new Uint8Array([0]),
-      new Uint8Array(Buffer.from(wallet.address.slice(2).toLowerCase(), 'hex'))
-    ]));
+    const connectionId = keccak256(
+      concat([
+        toUtf8Bytes('hyperliquid'),
+        zeroPadValue('0x00', 1),
+        zeroPadValue(wallet.address.toLowerCase(), 32)
+      ])
+    );
 
-    const phantomDomain = {
-      name: 'HyperliquidSignTransaction',
+    const domain = {
+      name: 'Exchange',
       version: '1',
-      chainId: 421614,
+      chainId: 1337,
       verifyingContract: '0x0000000000000000000000000000000000000000'
     };
 
-    const phantomTypes = {
+    const types = {
       Agent: [
         { name: 'source', type: 'string' },
         { name: 'connectionId', type: 'bytes32' }
       ]
     };
 
-    const phantomValue = {
+    const phantomAgent = {
       source: 'a',
       connectionId: connectionId
     };
 
-    await wallet.signTypedData(phantomDomain, phantomTypes, phantomValue);
-
-    const actionHash = keccak256(toUtf8Bytes(JSON.stringify(orderWire)));
-
-    const actionTypes = {
-      HyperliquidTransaction: [
-        { name: 'hyperliquidChain', type: 'string' },
-        { name: 'action', type: 'bytes32' },
-        { name: 'nonce', type: 'uint64' },
-        { name: 'vaultAddress', type: 'address' }
-      ]
-    };
-
-    const actionValue = {
-      hyperliquidChain: 'Mainnet',
-      action: actionHash,
-      nonce: timestamp,
-      vaultAddress: mainWallet
-    };
-
-    const actionSignature = await wallet.signTypedData(phantomDomain, actionTypes, actionValue);
+    const signature = await wallet.signTypedData(domain, types, phantomAgent);
 
     const orderRequest = {
       action: {
         type: 'order',
-        orders: [orderWire],
+        orders: [order],
         grouping: 'na'
       },
       nonce: timestamp,
       signature: {
-        r: actionSignature.slice(0, 66),
-        s: '0x' + actionSignature.slice(66, 130),
-        v: parseInt(actionSignature.slice(130, 132), 16)
+        r: signature.slice(0, 66),
+        s: '0x' + signature.slice(66, 130),
+        v: parseInt(signature.slice(130, 132), 16)
       },
       vaultAddress: mainWallet
     };
