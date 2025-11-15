@@ -108,7 +108,7 @@ export default async function handler(req, res) {
         s: '0x' + signature.slice(66, 130),
         v: parseInt(signature.slice(130, 132), 16)
       },
-      vaultAddress: mainWallet
+      vaultAddress: null
     };
 
     const tradeResponse = await fetch('https://api.hyperliquid.xyz/exchange', {
