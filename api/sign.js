@@ -1,4 +1,4 @@
-import { Wallet } from 'ethers';
+import { Wallet, keccak256, toUtf8Bytes, concat, zeroPadValue } from 'ethers';
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -16,7 +16,6 @@ export default async function handler(req, res) {
       throw new Error('Missing required parameters');
     }
 
-    // 使用 Agent Wallet 私钥创建签名者
     const wallet = new Wallet(privateKey);
     
     // 1. 获取资产索引
@@ -51,7 +50,16 @@ export default async function handler(req, res) {
       t: { limit: { tif: 'Ioc' } }
     };
 
-    // 3. EIP-712 签名
+    // 3. 生成 phantom agent connectionId
+    const connectionId = keccak256(
+      concat([
+        toUtf8Bytes('hyperliquid'),
+        zeroPadValue('0x00', 1),
+        zeroPadValue(wallet.address.toLowerCase(), 32)
+      ])
+    );
+
+    // 4. EIP-712 签名
     const domain = {
       name: 'Exchange',
       version: '1',
@@ -68,12 +76,12 @@ export default async function handler(req, res) {
 
     const phantomAgent = {
       source: 'a',
-      connectionId: wallet.address
+      connectionId: connectionId
     };
 
     const signature = await wallet.signTypedData(domain, types, phantomAgent);
 
-    // 4. 发送订单到 Hyperliquid
+    // 5. 发送订单到 Hyperliquid
     const orderRequest = {
       action: {
         type: 'order',
@@ -114,8 +122,7 @@ export default async function handler(req, res) {
       success: false,
       error: {
         message: error.message,
-        type: error.name,
-        stack: error.stack
+        type: error.name
       }
     });
   }
