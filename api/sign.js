@@ -1,4 +1,4 @@
-import { Wallet, keccak256, concat, toUtf8Bytes } from 'ethers';
+import { Wallet } from 'ethers';
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -13,12 +13,13 @@ export default async function handler(req, res) {
     const { privateKey, mainWallet, market, size, isBuy = true } = req.body;
     
     if (!privateKey || !mainWallet || !market || !size) {
-      throw new Error('Missing required parameters: privateKey, mainWallet, market, size');
+      throw new Error('Missing required parameters');
     }
 
+    // 使用 Agent Wallet 私钥创建签名者
     const wallet = new Wallet(privateKey);
     
-    // 步骤 1: 获取资产索引
+    // 1. 获取资产索引
     const metaResponse = await fetch('https://api.hyperliquid.xyz/info', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -39,9 +40,9 @@ export default async function handler(req, res) {
       throw new Error(`Asset ${market} not found`);
     }
 
-    // 步骤 2: 构建订单
+    // 2. 构建订单
     const timestamp = Date.now();
-    const orderWire = {
+    const order = {
       a: assetIndex,
       b: isBuy,
       p: '0',
@@ -50,66 +51,40 @@ export default async function handler(req, res) {
       t: { limit: { tif: 'Ioc' } }
     };
 
-    // 步骤 3: 签名
-    const connectionId = keccak256(concat([
-      toUtf8Bytes('hyperliquid'),
-      new Uint8Array([0]),
-      new Uint8Array(Buffer.from(wallet.address.slice(2).toLowerCase(), 'hex'))
-    ]));
-
-    const phantomDomain = {
-      name: 'HyperliquidSignTransaction',
+    // 3. EIP-712 签名
+    const domain = {
+      name: 'Exchange',
       version: '1',
-      chainId: 421614,
+      chainId: 1337,
       verifyingContract: '0x0000000000000000000000000000000000000000'
     };
 
-    const phantomTypes = {
+    const types = {
       Agent: [
         { name: 'source', type: 'string' },
         { name: 'connectionId', type: 'bytes32' }
       ]
     };
 
-    const phantomValue = {
+    const phantomAgent = {
       source: 'a',
-      connectionId: connectionId
+      connectionId: wallet.address
     };
 
-    await wallet.signTypedData(phantomDomain, phantomTypes, phantomValue);
+    const signature = await wallet.signTypedData(domain, types, phantomAgent);
 
-    const actionHash = keccak256(toUtf8Bytes(JSON.stringify(orderWire)));
-
-    const actionTypes = {
-      HyperliquidTransaction: [
-        { name: 'hyperliquidChain', type: 'string' },
-        { name: 'action', type: 'bytes32' },
-        { name: 'nonce', type: 'uint64' },
-        { name: 'vaultAddress', type: 'address' }
-      ]
-    };
-
-    const actionValue = {
-      hyperliquidChain: 'Mainnet',
-      action: actionHash,
-      nonce: timestamp,
-      vaultAddress: mainWallet
-    };
-
-    const actionSignature = await wallet.signTypedData(phantomDomain, actionTypes, actionValue);
-
-    // 步骤 4: 发送订单
+    // 4. 发送订单到 Hyperliquid
     const orderRequest = {
       action: {
         type: 'order',
-        orders: [orderWire],
+        orders: [order],
         grouping: 'na'
       },
       nonce: timestamp,
       signature: {
-        r: actionSignature.slice(0, 66),
-        s: '0x' + actionSignature.slice(66, 130),
-        v: parseInt(actionSignature.slice(130, 132), 16)
+        r: signature.slice(0, 66),
+        s: '0x' + signature.slice(66, 130),
+        v: parseInt(signature.slice(130, 132), 16)
       },
       vaultAddress: mainWallet
     };
@@ -131,9 +106,6 @@ export default async function handler(req, res) {
         is_buy: isBuy,
         asset_index: assetIndex
       },
-      tp: req.body.tp,
-      sl: req.body.sl,
-      timeout: req.body.timeout,
       timestamp: timestamp
     });
 
@@ -142,7 +114,8 @@ export default async function handler(req, res) {
       success: false,
       error: {
         message: error.message,
-        type: error.name
+        type: error.name,
+        stack: error.stack
       }
     });
   }
