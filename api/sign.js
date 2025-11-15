@@ -19,7 +19,7 @@ export default async function handler(req, res) {
 
     const wallet = new Wallet(privateKey);
     
-    // 步骤 1: 获取资产索引
+    // 步骤 1: 获取资产元数据
     const metaResponse = await fetch('https://api.hyperliquid.xyz/info', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -28,10 +28,12 @@ export default async function handler(req, res) {
     
     const meta = await metaResponse.json();
     let assetIndex = -1;
+    let szDecimals = 5; // 默认精度
     
     for (let i = 0; i < meta.universe.length; i++) {
       if (meta.universe[i].name === market) {
         assetIndex = i;
+        szDecimals = meta.universe[i].szDecimals || 5;
         break;
       }
     }
@@ -54,10 +56,12 @@ export default async function handler(req, res) {
       throw new Error(`Cannot get current price for ${market}`);
     }
     
-    // 市价单：买入用高价，卖出用低价
-    const limitPrice = isBuy ? 
-      (currentPrice * 1.05).toString() :  // 买入：高出市价 5%
-      (currentPrice * 0.95).toString();   // 卖出：低于市价 5%
+    // 计算限价并格式化到正确精度
+    const priceMultiplier = isBuy ? 1.05 : 0.95;
+    const rawPrice = currentPrice * priceMultiplier;
+    
+    // 使用 toFixed 并移除尾随零
+    const limitPrice = parseFloat(rawPrice.toFixed(szDecimals)).toString();
 
     // 步骤 3: 构建 action
     const timestamp = Date.now();
@@ -77,12 +81,10 @@ export default async function handler(req, res) {
     // 步骤 4: 计算 action hash
     let data = Buffer.from(encode(action));
     
-    // 添加 nonce (8 bytes, big-endian)
     const nonceBuffer = Buffer.alloc(8);
     nonceBuffer.writeBigUInt64BE(BigInt(timestamp));
     data = Buffer.concat([data, nonceBuffer]);
     
-    // 添加 vault address
     if (vaultAddress) {
       const vaultAddressBytes = Buffer.from(vaultAddress.slice(2).toLowerCase(), 'hex');
       data = Buffer.concat([data, Buffer.from([0x01]), vaultAddressBytes]);
@@ -144,7 +146,8 @@ export default async function handler(req, res) {
         is_buy: isBuy,
         asset_index: assetIndex,
         limit_price: limitPrice,
-        current_price: currentPrice
+        current_price: currentPrice,
+        sz_decimals: szDecimals
       },
       timestamp: timestamp
     });
