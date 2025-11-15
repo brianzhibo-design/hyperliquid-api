@@ -11,13 +11,12 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { privateKey, mainWallet, market, size, isBuy = true } = req.body;
+    const { privateKey, market, size, isBuy = true, vaultAddress = null } = req.body;
     
-    if (!privateKey || !mainWallet || !market || !size) {
-      throw new Error('Missing required parameters: privateKey, mainWallet, market, size');
+    if (!privateKey || !market || !size) {
+      throw new Error('Missing required parameters: privateKey, market, size');
     }
 
-    // 使用 Agent Wallet 私钥
     const wallet = new Wallet(privateKey);
     
     // 步骤 1: 获取资产索引
@@ -38,17 +37,17 @@ export default async function handler(req, res) {
     }
     
     if (assetIndex === -1) {
-      throw new Error(`Asset ${market} not found in Hyperliquid universe`);
+      throw new Error(`Asset ${market} not found`);
     }
 
-    // 步骤 2: 构建 action (遵循 Python SDK 格式)
+    // 步骤 2: 构建 action
     const timestamp = Date.now();
     const action = {
       type: 'order',
       orders: [{
         a: assetIndex,
         b: isBuy,
-        p: '0',  // 市价单
+        p: '0',
         s: size.toString(),
         r: false,
         t: { limit: { tif: 'Ioc' } }
@@ -56,8 +55,7 @@ export default async function handler(req, res) {
       grouping: 'na'
     };
 
-    // 步骤 3: 计算 action hash (完全按照 Python SDK 逻辑)
-    // action_hash(action, vault_address, nonce)
+    // 步骤 3: 计算 action hash
     let data = Buffer.from(encode(action));
     
     // 添加 nonce (8 bytes, big-endian)
@@ -65,24 +63,23 @@ export default async function handler(req, res) {
     nonceBuffer.writeBigUInt64BE(BigInt(timestamp));
     data = Buffer.concat([data, nonceBuffer]);
     
-    // 添加 vault address
-    if (mainWallet) {
-      const vaultAddressBytes = Buffer.from(mainWallet.slice(2).toLowerCase(), 'hex');
+    // 添加 vault address (如果是 null 就加 0x00)
+    if (vaultAddress) {
+      const vaultAddressBytes = Buffer.from(vaultAddress.slice(2).toLowerCase(), 'hex');
       data = Buffer.concat([data, Buffer.from([0x01]), vaultAddressBytes]);
     } else {
       data = Buffer.concat([data, Buffer.from([0x00])]);
     }
     
-    // Keccak256 哈希
     const actionHashHex = keccak256(data);
 
     // 步骤 4: 构建 Phantom Agent
     const phantomAgent = {
-      source: 'a',  // mainnet
+      source: 'a',
       connectionId: actionHashHex
     };
 
-    // 步骤 5: EIP-712 签名 Phantom Agent
+    // 步骤 5: EIP-712 签名
     const domain = {
       name: 'Exchange',
       version: '1',
@@ -99,7 +96,7 @@ export default async function handler(req, res) {
 
     const signature = await wallet.signTypedData(domain, types, phantomAgent);
 
-    // 步骤 6: 构建请求并发送到 Hyperliquid
+    // 步骤 6: 发送订单
     const orderRequest = {
       action: action,
       nonce: timestamp,
@@ -108,7 +105,7 @@ export default async function handler(req, res) {
         s: '0x' + signature.slice(66, 130),
         v: parseInt(signature.slice(130, 132), 16)
       },
-      vaultAddress: null
+      vaultAddress: vaultAddress
     };
 
     const tradeResponse = await fetch('https://api.hyperliquid.xyz/exchange', {
@@ -119,7 +116,6 @@ export default async function handler(req, res) {
 
     const result = await tradeResponse.json();
 
-    // 步骤 7: 返回结果
     return res.status(200).json({
       success: result.status === 'ok',
       response: result,
@@ -137,8 +133,7 @@ export default async function handler(req, res) {
       success: false,
       error: {
         message: error.message,
-        type: error.name,
-        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        type: error.name
       }
     });
   }
