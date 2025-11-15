@@ -19,7 +19,7 @@ export default async function handler(req, res) {
 
     const wallet = new Wallet(privateKey);
     
-    // 步骤 1: 获取资产索引
+    // 步骤 1: 获取资产元数据
     const metaResponse = await fetch('https://api.hyperliquid.xyz/info', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -28,10 +28,12 @@ export default async function handler(req, res) {
     
     const meta = await metaResponse.json();
     let assetIndex = -1;
+    let szDecimals = 5;
     
     for (let i = 0; i < meta.universe.length; i++) {
       if (meta.universe[i].name === market) {
         assetIndex = i;
+        szDecimals = meta.universe[i].szDecimals || 5;
         break;
       }
     }
@@ -54,8 +56,9 @@ export default async function handler(req, res) {
       throw new Error(`Cannot get current price for ${market}`);
     }
     
-    // 平仓卖单：使用低于市价的价格确保成交
-    const limitPrice = (currentPrice * 0.95).toString();
+    // 平仓价格：低于市价确保成交
+    const rawPrice = currentPrice * 0.95;
+    const limitPrice = parseFloat(rawPrice.toFixed(szDecimals)).toString();
 
     // 步骤 3: 构建平仓 action
     const timestamp = Date.now();
@@ -63,10 +66,10 @@ export default async function handler(req, res) {
       type: 'order',
       orders: [{
         a: assetIndex,
-        b: false,  // 卖出
+        b: false,
         p: limitPrice,
         s: size.toString(),
-        r: true,   // reduce_only = true
+        r: true,
         t: { limit: { tif: 'Ioc' } }
       }],
       grouping: 'na'
@@ -137,6 +140,7 @@ export default async function handler(req, res) {
       exit_price: result.response?.data?.statuses?.[0]?.filled?.avgPx || null,
       current_price: currentPrice,
       limit_price: limitPrice,
+      sz_decimals: szDecimals,
       timestamp: timestamp
     });
 
