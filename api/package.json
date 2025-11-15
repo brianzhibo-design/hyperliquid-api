@@ -1,0 +1,8 @@
+{
+  "name": "hyperliquid-api",
+  "version": "1.0.0",
+  "dependencies": {
+    "@nktkas/hyperliquid": "latest",
+    "ethers": "^5.7.2"
+  }
+}
