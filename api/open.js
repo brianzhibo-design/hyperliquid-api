@@ -2,6 +2,9 @@ import { Wallet, keccak256 } from 'ethers';
 import { encode } from '@msgpack/msgpack';
 
 export default async function handler(req, res) {
+  console.log('=== Request started ===');
+  console.log('Body:', JSON.stringify(req.body));
+  
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -18,7 +21,8 @@ export default async function handler(req, res) {
   }
 
   try {
-    // 添加调试信息
+    console.log('=== Parsing body ===');
+    
     if (!req.body) {
       return res.status(400).json({
         success: false,
@@ -27,6 +31,7 @@ export default async function handler(req, res) {
     }
 
     const { market, size, agent_key, tp, sl, timeout } = req.body;
+    console.log('Params:', { market, size, has_key: !!agent_key });
     
     if (!agent_key || !market || !size) {
       return res.status(400).json({
@@ -38,9 +43,11 @@ export default async function handler(req, res) {
       });
     }
 
+    console.log('=== Creating wallet ===');
     const wallet = new Wallet(agent_key);
+    console.log('Wallet address:', wallet.address);
     
-    // 1. 获取资产索引和当前价格
+    console.log('=== Fetching meta ===');
     const metaResponse = await fetch('https://api.hyperliquid.xyz/info', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -52,7 +59,9 @@ export default async function handler(req, res) {
     }
     
     const meta = await metaResponse.json();
+    console.log('Meta received, assets count:', meta.universe.length);
     
+    console.log('=== Fetching price ===');
     const midsResponse = await fetch('https://api.hyperliquid.xyz/info', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -64,6 +73,7 @@ export default async function handler(req, res) {
     }
     
     const mids = await midsResponse.json();
+    console.log('Price received for', market, ':', mids[market]);
     
     let assetIndex = -1;
     for (let i = 0; i < meta.universe.length; i++) {
@@ -76,13 +86,14 @@ export default async function handler(req, res) {
     if (assetIndex === -1) {
       throw new Error(`Asset ${market} not found`);
     }
+    console.log('Asset index:', assetIndex);
 
     const currentPrice = parseFloat(mids[market]);
     if (!currentPrice) {
       throw new Error(`Cannot get price for ${market}`);
     }
 
-    // 2. 构建 Trigger Market 订单
+    console.log('=== Building order ===');
     const timestamp = Date.now();
     const action = {
       type: 'order',
@@ -102,15 +113,21 @@ export default async function handler(req, res) {
       }],
       grouping: 'na'
     };
+    console.log('Action:', JSON.stringify(action));
 
-    // 3. 签名
+    console.log('=== Encoding with msgpack ===');
     let data = Buffer.from(encode(action));
+    console.log('Encoded length:', data.length);
+    
     const nonceBuffer = Buffer.alloc(8);
     nonceBuffer.writeBigUInt64BE(BigInt(timestamp));
     data = Buffer.concat([data, nonceBuffer, Buffer.from([0x00])]);
     
+    console.log('=== Hashing ===');
     const actionHashHex = keccak256(data);
+    console.log('Hash:', actionHashHex);
     
+    console.log('=== Signing ===');
     const signature = await wallet.signTypedData(
       {
         name: 'Exchange',
@@ -126,8 +143,9 @@ export default async function handler(req, res) {
       },
       { source: 'a', connectionId: actionHashHex }
     );
+    console.log('Signature:', signature.slice(0, 20) + '...');
 
-    // 4. 发送订单
+    console.log('=== Sending order ===');
     const tradeResponse = await fetch('https://api.hyperliquid.xyz/exchange', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -144,6 +162,7 @@ export default async function handler(req, res) {
     });
 
     const result = await tradeResponse.json();
+    console.log('Trade result:', JSON.stringify(result));
 
     return res.status(200).json({
       success: result.status === 'ok',
@@ -160,11 +179,15 @@ export default async function handler(req, res) {
     });
 
   } catch (error) {
+    console.error('=== ERROR ===');
+    console.error('Message:', error.message);
+    console.error('Stack:', error.stack);
+    
     return res.status(500).json({
       success: false,
       error: { 
         message: error.message,
-        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        stack: error.stack
       }
     });
   }
