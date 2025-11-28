@@ -5,6 +5,12 @@ function removeTrailingZeros(numStr) {
   return parseFloat(numStr).toString();
 }
 
+// ✅ 根据 tick size 调整价格
+function adjustToTickSize(price, tickSize) {
+  if (!tickSize || tickSize <= 0) return price;
+  return (Math.ceil(price / tickSize) * tickSize).toFixed(8);
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -74,7 +80,7 @@ export default async function handler(req, res) {
     if (!targetToken) {
       throw new Error(`Spot token ${spotToken} not found. Available tokens: ${spotMeta.tokens.slice(0, 10).map(t => t.name).join(', ')}...`);
     }
-    console.log('Found token:', targetToken.name, 'index:', targetToken.index, 'szDecimals:', targetToken.szDecimals);
+    console.log('Found token:', JSON.stringify(targetToken));
     
     // 找到交易对 (token vs USDC)
     let spotPair = null;
@@ -93,7 +99,7 @@ export default async function handler(req, res) {
       throw new Error(`Spot pair ${spotToken}/USDC not found`);
     }
     
-    console.log('Found spot pair:', spotPair.name, 'at universe index:', spotIndex);
+    console.log('Found spot pair:', JSON.stringify(spotPair));
     
     // 现货资产索引 = 10000 + universe index
     const assetIndex = 10000 + spotIndex;
@@ -136,14 +142,37 @@ export default async function handler(req, res) {
     // ✅ 根据 token 精度要求计算 size
     const szDecimals = targetToken.szDecimals || 0;
     const rawSize = usdAmount / currentPrice;
-    const factor = Math.pow(10, szDecimals);
-    const orderSize = (Math.floor(rawSize * factor) / factor).toString();
+    const szFactor = Math.pow(10, szDecimals);
+    const orderSize = (Math.floor(rawSize * szFactor) / szFactor).toString();
     
-    // ✅ 价格精度处理
-    const slippagePrice = removeTrailingZeros((currentPrice * 1.01).toFixed(6));
+    // ✅ 根据 tick size 计算价格（加 1% 滑点后对齐）
+    // spotMeta.universe[].tickSize 或从 token weiDecimals 推算
+    // 通常 tick size 可以从 API 获取，这里用保守方式
+    let tickSize = 0.01; // 默认 tick size
     
-    console.log(`Token szDecimals: ${szDecimals}`);
-    console.log(`Order: $${usdAmount} USDC / $${currentPrice} = ${orderSize} ${spotToken} (raw: ${rawSize.toFixed(8)}) @ $${slippagePrice}`);
+    // 尝试从 spotPair 获取 tick size（如果有的话）
+    if (spotPair.tickSize) {
+      tickSize = parseFloat(spotPair.tickSize);
+    } else {
+      // 根据价格量级推算合理的 tick size
+      if (currentPrice > 100) {
+        tickSize = 0.1;
+      } else if (currentPrice > 10) {
+        tickSize = 0.01;
+      } else if (currentPrice > 1) {
+        tickSize = 0.001;
+      } else if (currentPrice > 0.1) {
+        tickSize = 0.0001;
+      } else {
+        tickSize = 0.00001;
+      }
+    }
+    
+    const rawSlippagePrice = currentPrice * 1.01;
+    const slippagePrice = removeTrailingZeros(adjustToTickSize(rawSlippagePrice, tickSize));
+    
+    console.log(`Token szDecimals: ${szDecimals}, tickSize: ${tickSize}`);
+    console.log(`Order: $${usdAmount} USDC / $${currentPrice} = ${orderSize} ${spotToken} @ $${slippagePrice}`);
 
     // ✅ 验证 size 不为 0
     if (parseFloat(orderSize) <= 0) {
@@ -225,7 +254,8 @@ export default async function handler(req, res) {
         size: orderSize,
         price: slippagePrice,
         asset_index: assetIndex,
-        sz_decimals: szDecimals
+        sz_decimals: szDecimals,
+        tick_size: tickSize
       },
       tp, sl, timeout,
       timestamp
