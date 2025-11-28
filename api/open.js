@@ -30,7 +30,7 @@ export default async function handler(req, res) {
     if (!agent_key || !market || !size) {
       return res.status(400).json({
         success: false,
-        error: { message: 'Missing required parameters' }
+        error: { message: 'Missing required parameters: agent_key, market, size' }
       });
     }
 
@@ -39,9 +39,8 @@ export default async function handler(req, res) {
     
     // 代币名称映射（永续 -> 现货）
     const tokenMap = {
-      'ETH': 'UETH',   // ETH 现货叫 UETH
-      'BTC': 'UBTC',   // BTC 现货叫 UBTC  
-      // 其他代币保持原名
+      'ETH': 'UETH',
+      'BTC': 'UBTC',
     };
     
     const spotToken = tokenMap[market] || market;
@@ -75,10 +74,9 @@ export default async function handler(req, res) {
     if (!targetToken) {
       throw new Error(`Spot token ${spotToken} not found. Available tokens: ${spotMeta.tokens.slice(0, 10).map(t => t.name).join(', ')}...`);
     }
-    console.log('Found token:', targetToken.name, 'index:', targetToken.index);
+    console.log('Found token:', targetToken.name, 'index:', targetToken.index, 'szDecimals:', targetToken.szDecimals);
     
     // 找到交易对 (token vs USDC)
-    // USDC 的 token index = 0
     let spotPair = null;
     let spotIndex = -1;
     
@@ -116,9 +114,8 @@ export default async function handler(req, res) {
     const mids = await midsResponse.json();
     console.log('Looking for price with key:', spotPair.name);
     
-    const currentPrice = parseFloat(mids[spotPair.name]);
+    let currentPrice = parseFloat(mids[spotPair.name]);
     if (!currentPrice) {
-      // 尝试其他格式
       const altKey = `@${spotIndex}`;
       const altPrice = parseFloat(mids[altKey]);
       if (altPrice) {
@@ -135,10 +132,23 @@ export default async function handler(req, res) {
     const timestamp = Date.now();
     
     const usdAmount = parseFloat(size);
-    const orderSize = removeTrailingZeros((usdAmount / currentPrice).toFixed(4));
-    const slippagePrice = removeTrailingZeros((currentPrice * 1.01).toFixed(1));
     
-    console.log(`Order: $${usdAmount} USDC / $${currentPrice} = ${orderSize} ${spotToken} @ $${slippagePrice}`);
+    // ✅ 根据 token 精度要求计算 size
+    const szDecimals = targetToken.szDecimals || 0;
+    const rawSize = usdAmount / currentPrice;
+    const factor = Math.pow(10, szDecimals);
+    const orderSize = (Math.floor(rawSize * factor) / factor).toString();
+    
+    // ✅ 价格精度处理
+    const slippagePrice = removeTrailingZeros((currentPrice * 1.01).toFixed(6));
+    
+    console.log(`Token szDecimals: ${szDecimals}`);
+    console.log(`Order: $${usdAmount} USDC / $${currentPrice} = ${orderSize} ${spotToken} (raw: ${rawSize.toFixed(8)}) @ $${slippagePrice}`);
+
+    // ✅ 验证 size 不为 0
+    if (parseFloat(orderSize) <= 0) {
+      throw new Error(`Calculated order size is 0. USD amount: ${usdAmount}, price: ${currentPrice}, szDecimals: ${szDecimals}`);
+    }
 
     const action = {
       type: 'order',
@@ -214,7 +224,8 @@ export default async function handler(req, res) {
         usd_amount: usdAmount,
         size: orderSize,
         price: slippagePrice,
-        asset_index: assetIndex
+        asset_index: assetIndex,
+        sz_decimals: szDecimals
       },
       tp, sl, timeout,
       timestamp
